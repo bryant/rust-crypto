@@ -1,7 +1,7 @@
-//extern crate blake2;
+extern crate blake2;
 
 use std::mem;
-use blake2b::Blake2b;
+use self::blake2::Blake2b;
 use digest::Digest;
 use std::iter::FromIterator;
 
@@ -67,8 +67,8 @@ macro_rules! b2hash {
     ($out: expr; $($bytes: expr),*) => {
         {
             let mut b = Blake2b::new($out.len());
-            $(b.input($bytes));*;
-            b.result($out);
+            $(b.update($bytes));*;
+            b.finalize($out);
         }
     };
 }
