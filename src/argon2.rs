@@ -1,7 +1,7 @@
-extern crate blake2;
+extern crate blake2_rfc;
 
 use std::mem;
-use self::blake2::Blake2b;
+use self::blake2_rfc::blake2b::Blake2b;
 use digest::Digest;
 use std::iter::FromIterator;
 use cryptoutil::copy_memory;
@@ -69,7 +69,7 @@ macro_rules! b2hash {
         {
             let mut b = Blake2b::new($out.len());
             $(b.update($bytes));*;
-            b.finalize($out);
+            copy_memory(b.finalize().as_bytes(), $out);
         }
     };
 }
