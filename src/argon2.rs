@@ -15,7 +15,7 @@
 //! similar pattern to [`crypto::scrypt`](../scrypt/index.html). 
 //!
 //! # Provided methods
-//! * [`a2hash`](./fn.a2hash.html) -- Takes a password, salt, and `AlgorithmBuilder` object and produces a hash.
+//! * [`a2hash`](./fn.a2hash.html) -- Takes a password, salt, and `Algorithm` object and produces a hash.
 //! * [`simple2d`](./fn.simple2d.html) -- Accepts a password, salt, variant and uses default parameters.
 //! * [`simple2i`](./fn.simple2i.html) -- Accepts a password and salt, uses default parameters.
 //! 
@@ -29,14 +29,14 @@
 //! # extern crate rustc_serialize;
 //! # extern crate crypto; // this is infuriating
 //! # fn main() {
-//! use crypto::argon2::{ a2hash, AlgorithmBuilder };
+//! use crypto::argon2::{ a2hash, Algorithm };
 //! use rustc_serialize::hex::ToHex; // for nice hashes
 //!
 //! // Expected hash result
 //! const HASH: &'static str = "a36e28d37464eadfafd505205b3f3100";
 //! 
 //! // Set 8 lanes, and 1MB of memory
-//! let a2 = AlgorithmBuilder::argon2d()
+//! let a2 = Algorithm::argon2d()
 //!                 .hash_length(16)        // Set the length smaller for docs :)
 //!                 .lanes(8)               // 8 lanes 
 //!                 .memory_size(1 * 1024); // 1 * 1024 == 1MB
@@ -62,14 +62,16 @@
 //! # extern crate rustc_serialize;
 //! # extern crate crypto; // this is infuriating
 //! # fn main() {
-//! use crypto::argon2;
 //! use rustc_serialize::hex::ToHex; // for nice hashes
+//! 
+//! use crypto::argon2::{ Algorithm, a2hash };
 //!
 //! // Expected hash
-//! const HASH: &'static str = "0eb7da9c81a5a4afa65edac46dd0b46f0bb47041cf88bffef6b03534dec6c51a";
+//! const HASH: &'static str = "024d11660b08a1c38dbb2c048f48cbdac76a22547367a0f17fc32a63232c6dd7";
 //! 
 //! // Set 12 lanes, 5 passes, and 1GB memory
-//! let params = AlgorithmBuilder::argon2d()
+//! let params = Algorithm::argon2d()
+//!                 .hash_length(32)                 // 32 bytes of hash
 //!                 .lanes(12)                       // 12 threads  
 //!                 .passes(5)                       // 5 passes
 //!                 .memory_size(1 * 1024 * 1024);   // 1 * 1024 * 1024 == 1GB
@@ -78,13 +80,13 @@
 //! let hash = a2hash("master", "super salt", &params).unwrap();
 //! 
 //! // Make sure they're equal
-//! assert_eq!(out.to_hex(), HASH);
+//! assert_eq!(hash.to_hex(), HASH);
 //! # }
 //! ```
 //! 
 //! ## Saving State for future hashes 
 //! 
-//! The `AlgorithmBuilder` and `HashBuilder` allow consistent repeated hashes by maintaining a copy of the builder  
+//! The `Algorithm` and `Hash` allow consistent repeated hashes by maintaining a copy of the builder  
 //! while performing multiple hashes. The instances are also thread-safe. 
 //!
 //!
@@ -193,7 +195,7 @@ fn h0(lanes: u32, hash_length: u32, memory_kib: u32, passes: u32, version: u32,
 }
 
 
-
+// Ideally, this doesn't really need to be `pub`, but for testing it helps a lot. 
 pub struct Argon2 {
     blocks: Vec<Block>,
     
@@ -234,7 +236,7 @@ impl Argon2 {
         }
     }
 
-    pub fn hash(&mut self, out: &mut [u8], p: &[u8], s: &[u8], k: &[u8],
+    fn hash(&mut self, out: &mut [u8], p: &[u8], s: &[u8], k: &[u8],
                 x: &[u8]) {
         let h0 = self.h0(out.len() as u32, p, s, k, x);
 
@@ -537,9 +539,9 @@ fn lower_mult(a: u64, b: u64) -> u64 {
     lower32(a).wrapping_mul(lower32(b)).wrapping_mul(2)
 }
 
-/// Builder which creates `Argon2` instances for reuse.  
+/// Builder which creates `Hash` instances for reuse.  
 #[derive(Eq, PartialEq, Clone, Debug)]
-pub struct AlgorithmBuilder {
+pub struct Algorithm {
     /// Number of passes used in block matrix iterations. This forces the hash to take longer. 
     /// Must be larger than or equal to `1`.
     passes: u32,
@@ -558,22 +560,25 @@ pub struct AlgorithmBuilder {
     
     /// The variant (flavour) of Argon2 to use, for password hashing, use `Variant::Argon2i`. 
     variant: Variant,
-    
-        
 }
 
 /// Build up a single hash (reusable)
 #[derive(Eq, PartialEq, Clone, Debug)]
-pub struct HashBuilder {
+pub struct Hash {
     
-    alg_bldr: AlgorithmBuilder, 
+    /// Reference to the parent `Algorithm` instance that created it 
+    alg_bldr: Algorithm, 
     
+    /// Extra data used in computing, this is also known as `x`
     assoc_data: Vec<u8>,
     
+    /// Secret data, also known as `k`
     secret: Vec<u8>,
     
+    /// Password to hash 
     password: Vec<u8>,
     
+    /// Salt to stretch the `password`
     salt: Vec<u8>,
 }
 
@@ -620,12 +625,12 @@ pub enum ParamErr {
     }
 }
 
-impl AlgorithmBuilder {
+impl Algorithm {
 
     /// Load a new `Builder` instance with default values for `Argon2i`.
     /// Use this version for password hashing. 
-    pub fn argon2i() -> AlgorithmBuilder {
-        AlgorithmBuilder {
+    pub fn argon2i() -> Algorithm {
+        Algorithm {
             passes: T_COST_DEF, 
             lanes: LANES_DEF,
             memory_size: 1 << LOG_M_COST_DEF, // bad name..
@@ -636,8 +641,8 @@ impl AlgorithmBuilder {
     }
     
     /// Load a new `Builder` instance with default values for `Argon2d`
-    pub fn argon2d() -> AlgorithmBuilder {
-        AlgorithmBuilder {
+    pub fn argon2d() -> Algorithm {
+        Algorithm {
             passes: T_COST_DEF, 
             lanes: LANES_DEF,
             memory_size: 1 << LOG_M_COST_DEF, // bad name..
@@ -658,12 +663,12 @@ impl AlgorithmBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ a2hash, AlgorithmBuilder };
+    /// use crypto::argon2::{ a2hash, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
     /// const TWO_HUND_MB: u32 = 200 * 1024; 
     /// // Change the size to be 200MB and 4 parallel lanes 
-    /// let ab = AlgorithmBuilder::argon2i()
+    /// let ab = Algorithm::argon2i()
     ///             .hash_length(8)
     ///             .passes(1)                  // This just slows it down
     ///             .lanes(4)                   // 4 lanes
@@ -673,7 +678,7 @@ impl AlgorithmBuilder {
     /// assert_eq!("ed61ec377bb8de0d", hash.to_hex());
     /// # }
     /// ``` 
-    pub fn lanes(&self, lanes: u32) -> AlgorithmBuilder {
+    pub fn lanes(&self, lanes: u32) -> Algorithm {
         let mut ab = self.clone();
         ab.lanes = lanes;
         
@@ -691,12 +696,12 @@ impl AlgorithmBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ a2hash, AlgorithmBuilder };
+    /// use crypto::argon2::{ a2hash, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
     /// // Change the size to be 150MB
     /// const ONE_FIFTY_MB: u32 = 150 * 1024; 
-    /// let ab = AlgorithmBuilder::argon2i()
+    /// let ab = Algorithm::argon2i()
     ///             .passes(1)
     ///             .lanes(4)
     ///             .hash_length(8)
@@ -706,7 +711,7 @@ impl AlgorithmBuilder {
     /// assert_eq!("24dae86980422f9c", hash.to_hex());
     /// # }
     /// ``` 
-    pub fn memory_size(&self, size: u32) -> AlgorithmBuilder {
+    pub fn memory_size(&self, size: u32) -> Algorithm {
         let mut ab = self.clone();
         ab.memory_size = size;
         
@@ -724,15 +729,15 @@ impl AlgorithmBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ a2hash, AlgorithmBuilder };
+    /// use crypto::argon2::{ a2hash, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
-    /// let ab = AlgorithmBuilder::argon2i().hash_length(16).passes(2);
+    /// let ab = Algorithm::argon2i().hash_length(16).passes(2);
     /// let hash = a2hash("qwerty", "saltsalt", &ab).unwrap();
     /// assert_eq!("1fa37316c046c4dde19a3e110c97473d", hash.to_hex());
     /// # }
     /// ``` 
-    pub fn passes(&self, passes: u32) -> AlgorithmBuilder {
+    pub fn passes(&self, passes: u32) -> Algorithm {
         let mut ab = self.clone();
         ab.passes = passes;
         
@@ -747,16 +752,16 @@ impl AlgorithmBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ a2hash, AlgorithmBuilder };
+    /// use crypto::argon2::{ a2hash, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
-    /// let ab = AlgorithmBuilder::argon2i().hash_length(8);
+    /// let ab = Algorithm::argon2i().hash_length(8);
     /// let hash = a2hash("password", "saltsalt", &ab).unwrap();
     /// assert_eq!(8, hash.len());
     /// assert_eq!("de1477d409757354", hash.to_hex());
     /// # }
     /// ``` 
-    pub fn hash_length(&self, length: usize) -> AlgorithmBuilder {
+    pub fn hash_length(&self, length: usize) -> Algorithm {
         let mut ab = self.clone();
         
         ab.hash_length = length;
@@ -773,10 +778,10 @@ impl AlgorithmBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ a2hash, Variant, AlgorithmBuilder };
+    /// use crypto::argon2::{ a2hash, Variant, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
-    /// let ab = AlgorithmBuilder::argon2i().hash_length(8);
+    /// let ab = Algorithm::argon2i().hash_length(8);
     /// let hash_i = a2hash("password", "saltsalt", &ab).unwrap();
     /// assert_eq!("de1477d409757354", hash_i.to_hex());
     /// 
@@ -788,17 +793,17 @@ impl AlgorithmBuilder {
     /// assert!(hash_d != hash_i, "Hashes are equal! :(");
     /// # }
     /// ``` 
-    pub fn variant(&self, variant: Variant) -> AlgorithmBuilder {
+    pub fn variant(&self, variant: Variant) -> Algorithm {
         let mut ab = self.clone();
         
         ab.variant = variant;
         
         ab
     }
-
+    
     /// Verify that the result is valid
-    pub fn build(&self) -> Result<HashBuilder, ParamErr> {
-        if self.passes == 0 {
+    fn verify(&self) -> Result<(), ParamErr> {
+         if self.passes == 0 {
             Result::Err(ParamErr::ZeroPassesSpecified)
         } else if self.lanes == 0 {
             Result::Err(ParamErr::ZeroLanesSpecified)
@@ -810,17 +815,24 @@ impl AlgorithmBuilder {
         } else if self.hash_length < 4 || self.hash_length > 0xFFFFFFFF { 
             Result::Err(ParamErr::InvalidHashLength(self.hash_length))  
         } else {
-            Result::Ok(HashBuilder::new(self.clone()))
+            Result::Ok(())
         }
+    }
+
+    /// Create a new `Hash` instance
+    pub fn build(&self) -> Result<Hash, ParamErr> {
+        self.verify().and_then(|_| {
+             Result::Ok(Hash::new(self.clone()))
+        })
     }
 }
 
 
-impl HashBuilder {
+impl Hash {
     
-    /// Create a new instance of the HashBuilder, everything defaults to empty vec
-    fn new(ab: AlgorithmBuilder) -> HashBuilder {
-        HashBuilder {
+    /// Create a new instance of the Hash, everything defaults to empty vec
+    fn new(ab: Algorithm) -> Hash {
+        Hash {
             alg_bldr: ab,
             
             assoc_data: vec![0u8; 0], 
@@ -839,12 +851,12 @@ impl HashBuilder {
     /// # extern crate rustc_serialize;
     /// # extern crate crypto; // this is infuriating
     /// # fn main() {
-    /// use crypto::argon2::{ AlgorithmBuilder };
+    /// use crypto::argon2::{ Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     /// 
     /// const ASSOC_DATA: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     ///
-    /// let ab = AlgorithmBuilder::argon2i()
+    /// let ab = Algorithm::argon2i()
     ///                 .hash_length(8)
     ///                 .build().unwrap();
     /// let hash = ab.assoc_data(&ASSOC_DATA)
@@ -854,7 +866,7 @@ impl HashBuilder {
     /// assert_eq!(hash.to_hex(), "b03edb6399b78656");
     /// # }
     /// ```
-    pub fn assoc_data(&self, x: &[u8]) -> HashBuilder {
+    pub fn assoc_data(&self, x: &[u8]) -> Hash {
         let mut hb = self.clone();
         
         hb.assoc_data.clear();
@@ -876,14 +888,14 @@ impl HashBuilder {
     ///
     /// const SALT: &'static str = "deadbeef";
     ///
-    /// let ab = argon2::AlgorithmBuilder::argon2i().hash_length(8).build().unwrap();
+    /// let ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
     /// let hash = ab.password("qwerty")
     ///                 .salt(&SALT)
     ///                 .hash().unwrap();
     /// assert_eq!(hash.to_hex(), "4c233cd0d5f78c98");
     /// # }
     /// ```
-    pub fn salt(&self, salt: &str) -> HashBuilder {
+    pub fn salt(&self, salt: &str) -> Hash {
         let mut cl = self.clone();
         
         cl.salt.clear();
@@ -905,7 +917,7 @@ impl HashBuilder {
     /// 
     /// const SECRET: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     ///
-    /// let ab = argon2::AlgorithmBuilder::argon2i().hash_length(8).build().unwrap();
+    /// let ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
     /// let hash = ab.secret(&SECRET)
     ///                 .password("princess")
     ///                 .salt("super salt")
@@ -913,7 +925,7 @@ impl HashBuilder {
     /// assert_eq!(hash.to_hex(), "5d6a66408ace4d92");
     /// # }
     /// ```
-    pub fn secret(&self, k: &[u8]) -> HashBuilder {
+    pub fn secret(&self, k: &[u8]) -> Hash {
         let mut hb = self.clone();
         
         hb.secret.clear();
@@ -936,14 +948,14 @@ impl HashBuilder {
     /// 
     /// const PASSWORD: &'static str = "hunter1";
     ///
-    /// let hb = argon2::AlgorithmBuilder::argon2i().hash_length(16).build().unwrap();
+    /// let hb = argon2::Algorithm::argon2i().hash_length(16).build().unwrap();
     /// let hash = hb.password(PASSWORD)
     ///                     .salt("super salt")
     ///                     .hash().unwrap();
     /// assert_eq!(hash.to_hex(), "24c92fd56c1b8e6b72c379681a8a4df7");
     /// # }
     /// ```
-    pub fn password(&self, password: &str) -> HashBuilder {
+    pub fn password(&self, password: &str) -> Hash {
         let mut hb = self.clone();
         
         hb.password.clear();
@@ -1009,8 +1021,8 @@ impl fmt::Display for Variant {
     }
 }
 
-// Pretty print the HashBuilder
-impl fmt::Display for HashBuilder {
+// Pretty print the Hash
+impl  fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // print a slice
         fn print_hex_slice(f: &mut fmt::Formatter, vc: &[u8]) -> fmt::Result {
@@ -1033,7 +1045,7 @@ impl fmt::Display for HashBuilder {
 }
 
 // Pretty print the builder
-impl fmt::Display for AlgorithmBuilder {
+impl fmt::Display for Algorithm {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{{passes: {}, hash_length: {} B, lanes: {}, memory: {} KiB, variant: {}}}",
             self.passes, self.hash_length, self.lanes, self.memory_size, self.variant)
@@ -1056,13 +1068,13 @@ impl fmt::Display for AlgorithmBuilder {
 /// # extern crate crypto; // this is infuriating
 /// # fn main() {
 ///
-/// use crypto::argon2::{ a2hash, AlgorithmBuilder };
+/// use crypto::argon2::{ a2hash, Algorithm };
 /// 
 /// use rustc_serialize::hex::ToHex; // for simple serialization
 ///
 /// // Compute a 16-byte Argon2d hash of "welcome" with "super salt" running in 12 lanes 
 /// // with 5MB of memory and 5 passes per iteration. 
-/// let hash = a2hash("welcome", "super salt", &AlgorithmBuilder::argon2d()
+/// let hash = a2hash("welcome", "super salt", &Algorithm::argon2d()
 ///                                                 .hash_length(16)
 ///                                                 .lanes(12)
 ///                                                 .memory_size(5 * 1024)
@@ -1072,7 +1084,7 @@ impl fmt::Display for AlgorithmBuilder {
 /// ```
 /// 
 /// 
-pub fn a2hash(password: &str, salt: &str, params: &AlgorithmBuilder) -> Result<Vec<u8>, ParamErr> { 
+pub fn a2hash(password: &str, salt: &str, params: &Algorithm) -> Result<Vec<u8>, ParamErr> { 
     let hb = try!(params.build());
     
     hb.password(password)
@@ -1118,7 +1130,7 @@ pub fn a2hash(password: &str, salt: &str, params: &AlgorithmBuilder) -> Result<V
 /// # fn main() {
 /// use rustc_serialize::hex::ToHex; // for simple serialization
 ///
-/// use crypto::argon2::{ AlgorithmBuilder, simple2i };
+/// use crypto::argon2::{ Algorithm, simple2i };
 ///
 /// // Compute a 64-byte Argon2i hash of "princess" with "super salt"
 /// const PASSWORD: &'static str = "princess";
@@ -1128,7 +1140,7 @@ pub fn a2hash(password: &str, salt: &str, params: &AlgorithmBuilder) -> Result<V
 /// let short = simple2i(PASSWORD, SALT);
 /// 
 /// // Long version with a lot more configuration available
-/// let long = AlgorithmBuilder::argon2i()
+/// let long = Algorithm::argon2i()
 ///                 .build()
 ///                 .and_then(|hb| {
 ///                     hb.salt(SALT)
@@ -1142,7 +1154,7 @@ pub fn a2hash(password: &str, salt: &str, params: &AlgorithmBuilder) -> Result<V
 pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
     let mut out = [0; DEF_HASH_LEN];
     
-    AlgorithmBuilder::argon2i().build().and_then(|hb| {
+    Algorithm::argon2i().build().and_then(|hb| {
         hb.password(password)
            .salt(salt)
            .hash_inplace(&mut out)
@@ -1187,7 +1199,7 @@ pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
 /// # fn main() {
 /// use rustc_serialize::hex::ToHex; // for simple serialization
 /// 
-/// use crypto::argon2::{ AlgorithmBuilder, simple2d };
+/// use crypto::argon2::{ Algorithm, simple2d };
 ///
 /// // Compute a 64-byte Argon2d hash of "princess" with "super salt"
 /// const PASSWORD: &'static str = "princess";
@@ -1197,7 +1209,7 @@ pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
 /// let short = simple2d(PASSWORD, SALT);
 /// 
 /// // Long version with a lot more configuration available
-/// let long = AlgorithmBuilder::argon2d()
+/// let long = Algorithm::argon2d()
 ///                 .build()
 ///                 .and_then(|hb| {
 ///                     hb.salt(SALT)
@@ -1211,7 +1223,7 @@ pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
 pub fn simple2d(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
     let mut out = [0; DEF_HASH_LEN];
     
-    AlgorithmBuilder::argon2d().build().and_then(|hb| {
+    Algorithm::argon2d().build().and_then(|hb| {
         hb.password(password)
            .salt(salt)
            .hash_inplace(&mut out)
@@ -1360,7 +1372,7 @@ mod builders {
             const LANES: u32 = 1;
             const MEMORY_SIZE: u32 = LANES * 8 * 2 + 1;
 
-            let ab = AlgorithmBuilder::argon2d()
+            let ab = Algorithm::argon2d()
                         .passes(PASSES)
                         .lanes(LANES)
                         .memory_size(MEMORY_SIZE)
@@ -1383,7 +1395,7 @@ mod builders {
             const LANES: u32 = 0;
             const MEMORY_SIZE: u32 = LANES * 8 + 1;
         
-            let pb = AlgorithmBuilder::argon2i()
+            let pb = Algorithm::argon2i()
                         .passes(PASSES)
                         .lanes(LANES)
                         .memory_size(MEMORY_SIZE);
@@ -1400,7 +1412,7 @@ mod builders {
             const LANES: u32 = 1;
             const MEMORY_SIZE: u32 = LANES * 8 * 2 + 1;
 
-            let pb = AlgorithmBuilder::argon2d()
+            let pb = Algorithm::argon2d()
                         .passes(PASSES)
                         .lanes(LANES)
                         .memory_size(MEMORY_SIZE);
@@ -1418,7 +1430,7 @@ mod builders {
             const LANES: u32 = 1;
             const MEMORY_SIZE: u32 = LANES * 8 - 1;
             
-            let pb = AlgorithmBuilder::argon2i()
+            let pb = Algorithm::argon2i()
                         .passes(PASSES)
                         .lanes(LANES)
                         .memory_size(MEMORY_SIZE);
@@ -1438,17 +1450,9 @@ mod builders {
     // Hashing builders    
     mod hash {
         use argon2::*;
-       
-        fn hb() -> HashBuilder {
-            AlgorithmBuilder::argon2d()
-                .hash_length(16)
-                .build().unwrap()
-        }
         
         fn arg2() -> Argon2 {
-            let hb = hb();
-            
-            let ab = &hb.alg_bldr;
+            let ab = Algorithm::argon2d().hash_length(16);
             
             Argon2::new(ab.passes, ab.lanes, ab.memory_size, ab.variant)
         }
@@ -1461,7 +1465,9 @@ mod builders {
             let mut expected = [0u8; 16];
             arg2().hash(&mut expected, super::PASSWORD.as_bytes(), super::SALT.as_bytes(), &data, &[]);
             
-            let hash = hb().secret(&data)
+            let ab = Algorithm::argon2d().hash_length(16);
+            let hb = ab.build().unwrap();
+            let hash = hb.secret(&data)
                     .password(super::PASSWORD)
                     .salt(super::SALT)
                     .hash().unwrap();
@@ -1476,10 +1482,13 @@ mod builders {
             let mut expected = [0u8; 16];
             arg2().hash(&mut expected, super::PASSWORD.as_bytes(), super::SALT.as_bytes(), &[], &data);
             
-            let hash = hb().assoc_data(&data)
-                    .password(super::PASSWORD)
-                    .salt(super::SALT)
-                    .hash().unwrap();
+            
+            let ab = Algorithm::argon2d().hash_length(16);
+            let hb = ab.build().unwrap();
+            let hash = hb.assoc_data(&data)
+                        .password(super::PASSWORD)
+                        .salt(super::SALT)
+                        .hash().unwrap();
                     
             assert_eq!(hash, expected);
         }
@@ -1491,7 +1500,7 @@ mod builders {
         const LANES: u32 = 1;
         const MEMORY_SIZE: u32 = LANES * 8 * 2 + 1;
 
-        let pb = AlgorithmBuilder::argon2d()
+        let pb = Algorithm::argon2d()
                     .passes(PASSES)
                     .lanes(LANES)
                     .memory_size(MEMORY_SIZE)
@@ -1502,9 +1511,8 @@ mod builders {
             Result::Ok(_) => panic!("Successfully built with bad hash length, {}", pb),
         };
         
-        let ab = pb.hash_length(20)
-                    .build()
-                    .unwrap()
+        let pb2 = pb.hash_length(20);
+        let ab = pb2.build().unwrap()
                     .password(PASSWORD)
                     .salt(SALT);
         
