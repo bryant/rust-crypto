@@ -4,22 +4,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Machinery to embed the [argon2rs](https://github.com/bryant/argon2rs) library and compute the 
-//! [Argon2](https://github.com/P-H-C/phc-winner-/blob/master/-specs.pdf) password hashing algorithm. 
+//! Machinery to compute the [Argon2](https://github.com/P-H-C/phc-winner-/blob/master/-specs.pdf) 
+//! password hashing algorithm. 
 //! 
 //! The `argon2` module computes the [Argon2](https://github.com/P-H-C/phc-winner-/blob/master/-specs.pdf) 
 //! password hashing algorithm through a simple method, `crypto::argon2::argon2()`. 
 //!
-//! This module does **not** implement Argon2, it adds `rust-crypto`-like syntax to the external 
-//! [argon2rs](https://github.com/bryant/argon2rs) library written by @bryant. This module follows a 
-//! similar pattern to [`crypto::scrypt`](../scrypt/index.html). 
+//! This module implements Argon2, it was written by @bryant originally in [argon2rs](https://github.com/bryant/argon2rs). 
+//! The API for this module follows a similar pattern to [`crypto::scrypt`](../scrypt/index.html). 
 //!
-//! # Provided methods
+//! # Provided quick access methods
+//! 
 //! * [`a2hash`](./fn.a2hash.html) -- Takes a password, salt, and `Algorithm` object and produces a hash.
 //! * [`simple2d`](./fn.simple2d.html) -- Accepts a password, salt, variant and uses default parameters.
 //! * [`simple2i`](./fn.simple2i.html) -- Accepts a password and salt, uses default parameters.
 //! 
-//! # Examples 
+//! ## Examples 
 //! 
 //! Simple Argon2d hash: 
 //!
@@ -85,14 +85,50 @@
 //! # }
 //! ```
 //! 
-//! ## Saving State for future hashes 
+//! Utilizing *all* of the parameters!
+//!
+//! ```
+//! # extern crate rustc_serialize;
+//! # extern crate crypto; // this is infuriating
+//! # fn main() {
+//! use rustc_serialize::hex::ToHex; // for nice hashes
+//! 
+//! use crypto::argon2::{ Algorithm, a2hash };
+//!
+//! // Expected hash
+//! const HASH: &'static str = concat!("10c500f940373f979a53832d0726cce4",
+//!                                    "c0817584fdb4d7ede19ee6be77008773");
+//! 
+//! // Set 4 lanes, 4 passes, and 350MB memory
+//! let alg = Algorithm::argon2d()
+//!                 .hash_length(32)                // 32 bytes of hash
+//!                 .lanes(4)                       // 4 threads  
+//!                 .passes(4)                      // 4 passes
+//!                 .memory_size(350 * 1024);       // 350 * 1024 == 350MB
+//! 
+//! let mut buff = vec![0u8; 32]; // 32 bytes
+//! alg.build().unwrap()
+//!     .password("welcome")                    // Password
+//!     .salt("More Salt!")                     // Salt
+//!     .assoc_data(&[34, 32, 19, 09, 0xff])    // Associated data, `x`
+//!     .secret(&[03, 43, 32])                  // Secret, `k`! don't tell anyone!
+//!     .hash_inplace(buff.as_mut_slice())      // hash into the buffer we alloc'd before
+//!     .unwrap();                              // Alternately, could have used .hash() which 
+//!                                             //      returns a `Result<Vec<u8>, ParamErr>`
+//! 
+//! // Make sure they're equal
+//! assert_eq!(buff.to_hex(), HASH);
+//! # }
+//! ```
+//! 
+//! # Builders: Saving State for repeated hashing patterns 
 //! 
 //! The `Algorithm` struct allows for consistent repeated hashes by maintaining a copy of the builder  
 //! while performing multiple hashes. The instances are thread-safe.
 //!
-//! The `Hash` struct uses references to remove unecessary allocations, but does implement `Clone` if needed. 
+//! The `HashBldr` struct uses references to remove unecessary allocations, but does implement `Clone` if needed. 
 //!
-//! ### Example
+//! ## Reuse in Parallel Example
 //! 
 //! The following example shows reuse and checking in a multi-threaded environment.
 //! 
@@ -161,8 +197,6 @@
 //! }
 //! # }
 //! ```
-//!
-//!
 //!
 
 use std::mem;
@@ -736,16 +770,16 @@ impl Algorithm {
     /// use crypto::argon2::{ a2hash, Algorithm };
     /// use rustc_serialize::hex::ToHex; // for nice hashes
     ///
-    /// const TWO_HUND_MB: u32 = 200 * 1024; 
-    /// // Change the size to be 200MB and 4 parallel lanes 
+    /// const FIFTY_MB: u32 = 50 * 1024; 
+    /// // Change the size to be 50MB and 2 parallel lanes 
     /// let ab = Algorithm::argon2i()
     ///             .hash_length(8)
     ///             .passes(1)                  // This just slows it down
-    ///             .lanes(4)                   // 4 lanes
-    ///             .memory_size(TWO_HUND_MB);  // 1GB
+    ///             .lanes(2)                   // 4 lanes
+    ///             .memory_size(FIFTY_MB);     // 50MB
     ///
     /// let hash = a2hash("master", "saltsalt", &ab).unwrap();
-    /// assert_eq!("ed61ec377bb8de0d", hash.to_hex());
+    /// assert_eq!("f52a5f0f72c87029", hash.to_hex());
     /// # }
     /// ``` 
     pub fn lanes(&self, lanes: u32) -> Algorithm {
@@ -773,12 +807,12 @@ impl Algorithm {
     /// const ONE_FIFTY_MB: u32 = 150 * 1024; 
     /// let ab = Algorithm::argon2i()
     ///             .passes(1)
-    ///             .lanes(4)
+    ///             .lanes(2)
     ///             .hash_length(8)
     ///             .memory_size(ONE_FIFTY_MB); // 150MB
     ///
     /// let hash = a2hash("princess", "saltsalt", &ab).unwrap();
-    /// assert_eq!("24dae86980422f9c", hash.to_hex());
+    /// assert_eq!("c82552f5c18f4c98", hash.to_hex());
     /// # }
     /// ``` 
     pub fn memory_size(&self, size: u32) -> Algorithm {
@@ -1083,7 +1117,7 @@ impl fmt::Display for Variant {
 }
 
 // Pretty print the HashBldr
-impl  fmt::Display for HashBldr {
+impl fmt::Display for HashBldr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // print a slice
         fn print_hex_slice(f: &mut fmt::Formatter, vc: &[u8]) -> fmt::Result {
@@ -1134,13 +1168,13 @@ impl fmt::Display for Algorithm {
 /// use rustc_serialize::hex::ToHex; // for simple serialization
 ///
 /// // Compute a 16-byte Argon2d hash of "welcome" with "super salt" running in 12 lanes 
-/// // with 5MB of memory and 5 passes per iteration. 
+/// // with 5MB of memory and 2 passes per iteration. 
 /// let hash = a2hash("welcome", "super salt", &Algorithm::argon2d()
 ///                                                 .hash_length(16)
 ///                                                 .lanes(12)
 ///                                                 .memory_size(5 * 1024)
-///                                                 .passes(5)).unwrap();
-/// assert_eq!("5eb7530b8be9761892dced877d66e86b", hash.to_hex());
+///                                                 .passes(2)).unwrap();
+/// assert_eq!("8e5c596f755d5c941bd7256ac6876c10", hash.to_hex());
 /// # }
 /// ```
 /// 
