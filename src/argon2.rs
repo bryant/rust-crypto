@@ -51,14 +51,14 @@
 
 // ********************************************************************************************************************
 // ** This test case is rough on a lot of computers, it should be verified regularly, but it's pretty slow. Thus it 
-// ** is currenly ignored. 
+// ** is currenly ignored. Debug mode is the main culprit for this.
 // ********************************************************************************************************************
 
 //!
 //! Large memory-hash using Argon2i with 12 lanes, 12 block passes and 1GB of memory
 //!
-//! ```ignore 
-//! // WARNING: This is very slow on older or busy computers
+//! ```ignore
+//! // WARNING: This is very slow on older or busy computers. It is also slow in debug mode.
 //! # extern crate rustc_serialize;
 //! # extern crate crypto; // this is infuriating
 //! # fn main() {
@@ -67,7 +67,8 @@
 //! use crypto::argon2::{ Algorithm, a2hash };
 //!
 //! // Expected hash
-//! const HASH: &'static str = "024d11660b08a1c38dbb2c048f48cbdac76a22547367a0f17fc32a63232c6dd7";
+//! const HASH: &'static str = concat!("024d11660b08a1c38dbb2c048f48cbda",
+//!                                    "c76a22547367a0f17fc32a63232c6dd7");
 //! 
 //! // Set 12 lanes, 5 passes, and 1GB memory
 //! let params = Algorithm::argon2d()
@@ -86,11 +87,80 @@
 //! 
 //! ## Saving State for future hashes 
 //! 
-//! The `Algorithm` and `Hash` allow consistent repeated hashes by maintaining a copy of the builder  
-//! while performing multiple hashes. The instances are also thread-safe. 
+//! The `Algorithm` struct allows for consistent repeated hashes by maintaining a copy of the builder  
+//! while performing multiple hashes. The instances are thread-safe.
 //!
+//! The `Hash` struct uses references to remove unecessary allocations, but does implement `Clone` if needed. 
 //!
+//! ### Example
+//! 
+//! The following example shows reuse and checking in a multi-threaded environment.
+//! 
+//! ``` 
+//! # extern crate rustc_serialize;
+//! # extern crate crypto; // this is infuriating
+//! # fn main() {
+//! use rustc_serialize::hex::ToHex; // for nice hashes
+//! 
+//! use crypto::argon2::{ Algorithm };
+//! use std::thread;
+//! use std::sync::{ Arc, Mutex };
+//! use std::time::Duration;
+//! 
+//! // Passwords!
+//! const PASSWORDS: [&'static str; 3] = ["master", "princess", "12345678"];
 //!
+//! // Expected hashes!
+//! const HASHES: [&'static str; 3] = [concat!("11b4c46b4fb6f00536c4a86b0b4c338a",
+//!                                            "2ed30f32b35f8572f799df9721dae7cb"),
+//!                                    concat!("265ca612224064703a0def52621b6a0c",
+//!                                            "2729907f406af6b44ee1dc08c43f4c28"),
+//!                                    concat!("e36a674caa556f0e70c9790d652cb6d7",
+//!                                            "f8ce83916d74b1448194d36e44ea8fff")];
+//! 
+//! // Set 2 lanes, 3 passes, and 100MB memory per algorithm run
+//! let alg_params = Arc::new(Algorithm::argon2d()
+//!                             .hash_length(32)                // 32 bytes of hash
+//!                             .lanes(2)                       // 2 threads  
+//!                             .passes(3)                      // 3 passes
+//!                             .memory_size(100 * 1024));      // 100 * 1024 == 100MB
+//! let results = Arc::new(vec![Mutex::new(vec![0u8; 32]), 
+//!                             Mutex::new(vec![0u8; 32]), 
+//!                             Mutex::new(vec![0u8; 32])]);
+//! 
+//! // Compute all of the hashes in parallel
+//! for i in 0..PASSWORDS.len() {
+//!     let pass = PASSWORDS[i]; // access it this way to increase the scope of the value for the 
+//!                              // thread closure later   
+//!
+//!     // clone the Arcs
+//!     let alg = alg_params.clone();
+//!     let results = results.clone();
+//!     
+//!     thread::spawn(move || {
+//!         let mut result = results[i].lock().unwrap();
+//!         alg.build().unwrap()
+//!             .password(pass)
+//!             .salt("super duper salt")
+//!             .hash_inplace(result.as_mut_slice())
+//!             .unwrap();
+//!     });
+//! }
+//! 
+//! // Go to sleep and wait for them to finish. If this was not enough time, 
+//! // the `Mutex::lock()` will force us to wait later
+//! thread::sleep(Duration::from_millis(50));
+//! 
+//! // Now check that the hashes are correct!
+//! for (i, expected) in HASHES.iter().enumerate() {
+//!     let result = results[i].lock().unwrap(); // lock the result arrays
+//!     let hex = result.to_hex();
+//! 
+//!     println!("{}: left={} ;; right={}", i, hex, expected);
+//!     assert_eq!(hex, *expected);
+//! }
+//! # }
+//! ```
 //!
 //!
 //!
@@ -564,7 +634,7 @@ pub struct Algorithm {
 
 /// Build up a single hash (reusable)
 #[derive(Eq, PartialEq, Clone, Debug)]
-pub struct Hash {
+pub struct HashBldr {
     
     /// Reference to the parent `Algorithm` instance that created it 
     alg_bldr: Algorithm, 
@@ -819,20 +889,19 @@ impl Algorithm {
         }
     }
 
-    /// Create a new `Hash` instance
-    pub fn build(&self) -> Result<Hash, ParamErr> {
+    /// Create a new `HashBldr` instance
+    pub fn build(&self) -> Result<HashBldr, ParamErr> {
         self.verify().and_then(|_| {
-             Result::Ok(Hash::new(self.clone()))
+             Result::Ok(HashBldr::new(self.clone()))
         })
     }
 }
 
-
-impl Hash {
+impl HashBldr {
     
-    /// Create a new instance of the Hash, everything defaults to empty vec
-    fn new(ab: Algorithm) -> Hash {
-        Hash {
+    /// Create a new instance of the HashBldr, everything defaults to empty vec
+    fn new(ab: Algorithm) -> HashBldr {
+        HashBldr {
             alg_bldr: ab,
             
             assoc_data: vec![0u8; 0], 
@@ -843,7 +912,7 @@ impl Hash {
         }
     }
     
-    /// Set the associated data for a Hash instance, this is the variable `x` in the Argon2 algorithms.
+    /// Set the associated data for a `HashBldr` instance, this is the variable `x` in the Argon2 algorithms.
     /// 
     /// # Example
     /// 
@@ -856,7 +925,7 @@ impl Hash {
     /// 
     /// const ASSOC_DATA: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     ///
-    /// let ab = Algorithm::argon2i()
+    /// let mut ab = Algorithm::argon2i()
     ///                 .hash_length(8)
     ///                 .build().unwrap();
     /// let hash = ab.assoc_data(&ASSOC_DATA)
@@ -866,13 +935,11 @@ impl Hash {
     /// assert_eq!(hash.to_hex(), "b03edb6399b78656");
     /// # }
     /// ```
-    pub fn assoc_data(&self, x: &[u8]) -> Hash {
-        let mut hb = self.clone();
+    pub fn assoc_data(&mut self, x: &[u8]) -> &mut HashBldr {
+        self.assoc_data.clear();
+        self.assoc_data.extend_from_slice(x);
         
-        hb.assoc_data.clear();
-        hb.assoc_data.extend_from_slice(x);
-        
-        hb
+        self
     }
     
     /// Set the salt for a hash.
@@ -888,23 +955,21 @@ impl Hash {
     ///
     /// const SALT: &'static str = "deadbeef";
     ///
-    /// let ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
+    /// let mut ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
     /// let hash = ab.password("qwerty")
     ///                 .salt(&SALT)
     ///                 .hash().unwrap();
     /// assert_eq!(hash.to_hex(), "4c233cd0d5f78c98");
     /// # }
     /// ```
-    pub fn salt(&self, salt: &str) -> Hash {
-        let mut cl = self.clone();
-        
-        cl.salt.clear();
-        cl.salt.extend_from_slice(salt.as_bytes());
+    pub fn salt(&mut self, salt: &str) -> &mut HashBldr {
+        self.salt.clear();
+        self.salt.extend_from_slice(salt.as_bytes());
        
-        cl
+        self
     }
     
-    /// Set the secret data for a hash instance, this is `k` in the Argon2 algorithm.
+    /// Set the secret data for a hash, this is `k` in the Argon2 algorithm.
     /// 
     /// # Example
     /// 
@@ -917,7 +982,7 @@ impl Hash {
     /// 
     /// const SECRET: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     ///
-    /// let ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
+    /// let mut ab = argon2::Algorithm::argon2i().hash_length(8).build().unwrap();
     /// let hash = ab.secret(&SECRET)
     ///                 .password("princess")
     ///                 .salt("super salt")
@@ -925,13 +990,11 @@ impl Hash {
     /// assert_eq!(hash.to_hex(), "5d6a66408ace4d92");
     /// # }
     /// ```
-    pub fn secret(&self, k: &[u8]) -> Hash {
-        let mut hb = self.clone();
-        
-        hb.secret.clear();
-        hb.secret.extend_from_slice(k);
+    pub fn secret(&mut self, k: &[u8]) -> &mut HashBldr {
+        self.secret.clear();
+        self.secret.extend_from_slice(k);
        
-        hb
+        self
     }
     
     
@@ -948,20 +1011,18 @@ impl Hash {
     /// 
     /// const PASSWORD: &'static str = "hunter1";
     ///
-    /// let hb = argon2::Algorithm::argon2i().hash_length(16).build().unwrap();
+    /// let mut hb = argon2::Algorithm::argon2i().hash_length(16).build().unwrap();
     /// let hash = hb.password(PASSWORD)
     ///                     .salt("super salt")
     ///                     .hash().unwrap();
     /// assert_eq!(hash.to_hex(), "24c92fd56c1b8e6b72c379681a8a4df7");
     /// # }
     /// ```
-    pub fn password(&self, password: &str) -> Hash {
-        let mut hb = self.clone();
-        
-        hb.password.clear();
-        hb.password.extend_from_slice(password.as_bytes());
+    pub fn password(&mut self, password: &str) -> &mut HashBldr {
+        self.password.clear();
+        self.password.extend_from_slice(password.as_bytes());
        
-        hb
+        self
     }
     
     /// Verify that the set parameters are OK, if not return `Result::Err`.
@@ -1021,8 +1082,8 @@ impl fmt::Display for Variant {
     }
 }
 
-// Pretty print the Hash
-impl  fmt::Display for Hash {
+// Pretty print the HashBldr
+impl  fmt::Display for HashBldr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // print a slice
         fn print_hex_slice(f: &mut fmt::Formatter, vc: &[u8]) -> fmt::Result {
@@ -1085,7 +1146,7 @@ impl fmt::Display for Algorithm {
 /// 
 /// 
 pub fn a2hash(password: &str, salt: &str, params: &Algorithm) -> Result<Vec<u8>, ParamErr> { 
-    let hb = try!(params.build());
+    let mut hb = try!(params.build());
     
     hb.password(password)
         .salt(salt)
@@ -1142,7 +1203,7 @@ pub fn a2hash(password: &str, salt: &str, params: &Algorithm) -> Result<Vec<u8>,
 /// // Long version with a lot more configuration available
 /// let long = Algorithm::argon2i()
 ///                 .build()
-///                 .and_then(|hb| {
+///                 .and_then(|mut hb| {
 ///                     hb.salt(SALT)
 ///                         .password(PASSWORD)
 ///                         .hash()   
@@ -1154,7 +1215,7 @@ pub fn a2hash(password: &str, salt: &str, params: &Algorithm) -> Result<Vec<u8>,
 pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
     let mut out = [0; DEF_HASH_LEN];
     
-    Algorithm::argon2i().build().and_then(|hb| {
+    Algorithm::argon2i().build().and_then(|mut hb| {
         hb.password(password)
            .salt(salt)
            .hash_inplace(&mut out)
@@ -1211,7 +1272,7 @@ pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
 /// // Long version with a lot more configuration available
 /// let long = Algorithm::argon2d()
 ///                 .build()
-///                 .and_then(|hb| {
+///                 .and_then(|mut hb| {
 ///                     hb.salt(SALT)
 ///                         .password(PASSWORD)
 ///                         .hash()
@@ -1223,7 +1284,7 @@ pub fn simple2i(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
 pub fn simple2d(password: &str, salt: &str) -> [u8; DEF_HASH_LEN] {
     let mut out = [0; DEF_HASH_LEN];
     
-    Algorithm::argon2d().build().and_then(|hb| {
+    Algorithm::argon2d().build().and_then(|mut hb| {
         hb.password(password)
            .salt(salt)
            .hash_inplace(&mut out)
@@ -1466,7 +1527,7 @@ mod builders {
             arg2().hash(&mut expected, super::PASSWORD.as_bytes(), super::SALT.as_bytes(), &data, &[]);
             
             let ab = Algorithm::argon2d().hash_length(16);
-            let hb = ab.build().unwrap();
+            let mut hb = ab.build().unwrap();
             let hash = hb.secret(&data)
                     .password(super::PASSWORD)
                     .salt(super::SALT)
@@ -1484,7 +1545,7 @@ mod builders {
             
             
             let ab = Algorithm::argon2d().hash_length(16);
-            let hb = ab.build().unwrap();
+            let mut hb = ab.build().unwrap();
             let hash = hb.assoc_data(&data)
                         .password(super::PASSWORD)
                         .salt(super::SALT)
@@ -1511,9 +1572,8 @@ mod builders {
             Result::Ok(_) => panic!("Successfully built with bad hash length, {}", pb),
         };
         
-        let pb2 = pb.hash_length(20);
-        let ab = pb2.build().unwrap()
-                    .password(PASSWORD)
+        let mut ab = pb.hash_length(20).build().unwrap();
+        let ab = ab.password(PASSWORD)
                     .salt(SALT);
         
         let mut bad_vec = vec![0u8; 5];
